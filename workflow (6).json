@@ -1,0 +1,1695 @@
+{
+  "name": "Oncology Medical Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "oncology-assistant",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -976,
+        176
+      ],
+      "id": "3e9f2fff-e6c5-4fd1-968d-a4dc332d04be",
+      "name": "Webhook Trigger"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "has_webhook_audio",
+                    "leftValue": "={{ $json.body.input }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "exists",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "webhook_text"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "has_webhook_input",
+                    "leftValue": "={{ $json.body.audio }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "exists",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "webhook_audio"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "has_tts_text",
+                    "leftValue": "={{ $json.body.ttsOnly }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "exists",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "tts_only"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -720,
+        160
+      ],
+      "id": "a0ab8d94-2848-48fb-9912-9678559b2cfe",
+      "name": "Route Source"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item.json;\nconst base64 = item.body.audio;\nconst mimeType = item.body.audioMimeType || 'audio/webm';\n\nreturn {\n  json: { ...item, audioBase64: base64, audioMimeType: mimeType }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -432,
+        240
+      ],
+      "id": "3e8cf318-ad2d-49a5-9512-fe37b51e58e9",
+      "name": "Decode Webhook Audio"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"parts\": [\n        { \"text\": \"Generate a transcript of this speech audio. Reply with only the transcript text, nothing else.\" },\n        { \"inlineData\": { \"mimeType\": {{ JSON.stringify($json.audioMimeType || 'audio/webm') }}, \"data\": {{ JSON.stringify($json.audioBase64) }} } }\n      ]\n    }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -208,
+        240
+      ],
+      "id": "ddea2db7-542b-4c35-885b-6e14818a1989",
+      "name": "Transcribe Voice",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ Object.assign({}, $json, { _voiceSource: true, content: $json.candidates?.[0]?.content?.parts?.[0]?.text ?? '' }) }}",
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        0,
+        240
+      ],
+      "id": "9567b0c5-cd01-4b1d-aeb0-174f1d1dd536",
+      "name": "Tag Voice Source"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\n\n// Recover chatId/body fields directly from the Webhook Trigger node as a fallback,\n// since voice-processing nodes (Transcribe Voice, Decode Webhook Audio) overwrite\n// $json along the way and can lose fields from the original trigger payload.\nlet webhookBody = null;\n\ntry {\n  const arr = $items('Webhook Trigger', 0, 0);\n  if (arr && arr.length) webhookBody = arr[0].json.body;\n} catch (e) {}\n\nlet userText = item.body?.input ?? item.text ?? item.output ?? item.content ?? '';\n\nconst chatId = item.body?.chatId\n  ?? webhookBody?.chatId\n  ?? item.sessionId\n  ?? 'anonymous';\n\nconst topicId = item.body?.topicId ?? item.topicId ?? webhookBody?.topicId ?? undefined;\nconst model = item.body?.model ?? item.model ?? webhookBody?.model ?? 'gemini-3-flash-preview';\nconst requester = item.body?.requester ?? item.requester ?? webhookBody?.requester ?? undefined;\nconst patientId = item.body?.patientId ?? item.patientId ?? webhookBody?.patientId ?? undefined;\nconst medplumToken = item.body?.medplumToken ?? item.medplumToken ?? webhookBody?.medplumToken ?? undefined;\nconst messages = item.body?.messages ?? item.messages ?? webhookBody?.messages ?? [];\n\n// normalize `type` — any unrecognized value falls back to 'translator'\nconst rawType = item.body?.type ?? item.type ?? webhookBody?.type ?? 'translator';\nconst validTypes = ['summary', 'translator', 'visualizer'];\nconst type = validTypes.includes(rawType) ? rawType : 'translator';\n\n// this workflow is webhook-only; source is always 'webhook'\nconst source = 'webhook';\nconst voiceSource = item._voiceSource === true;\nconst replyWithVoice = item.body?.replyWithVoice ?? webhookBody?.replyWithVoice ?? voiceSource;\n\nreturn [{ json: { userText, chatId, topicId, model, requester, patientId, medplumToken, type, messages, source, voiceSource, replyWithVoice } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        160
+      ],
+      "id": "0e0359b1-3328-4284-aac6-941a87141bae",
+      "name": "Normalize Input"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ ($json.requester ? 'Current logged-in practitioner reference: ' + $json.requester + '\\n\\n' : '') + $json.userText }}",
+        "options": {
+          "systemMessage": "You are a medical AI assistant .\n\nRules:\n- Always use the available tools. Never invent data.\n- Create: extract given and family names; ask only for missing required fields.\n- Search: use Search Patient. This server does exact substring matching only -- no typo tolerance and no automatic Arabic/English transliteration matching. If the name given is a short vowel-less abbreviation (e.g. 'mhmd', 'hmd', 'khld') -- too ambiguous to expand reliably, since it could map to several different full names -- do NOT guess repeatedly; ask the user to spell out the full name instead. Otherwise, if a name search returns zero results, before telling the user no match exists, retry (each as a separate call) with: the given name alone, then the family name alone, then several plausible alternate spellings if the name looks like a transliterated Arabic name -- cover different common patterns (double vs single consonants, -ad/-ed/-med endings), e.g. for a name like 'Mohammed' also try Muhammad, Mohamed, Mohammad, Muhammed, Mohamad. Only after those attempts still return nothing should you tell the user no match was found, and suggest they double-check the spelling or give another identifier (e.g. birth date).\n- Update: resolve the patient's patientId first, the same way as every other write tool -- via Search Patient or a cached [ref: ...] tag -- then call Update Patient with it. Do not search by name inside Update Patient itself.\n- If Search Patient reports multiple matches for a name, list them (with any distinguishing detail such as birth date) and ask the user to specify which one they mean before proceeding (this applies before any operation that needs a patientId, including Update).\n- Patient records cannot be deleted under this hospital's current policy — no role has that permission. If a user asks to delete a patient, tell them this directly instead of attempting it.\n- If no match is found, tell the user clearly instead of retrying blindly.\n\n- Coded clinical data (diagnoses, allergies, medications, family history conditions/relationships) MUST use real codes resolved via the search tools below -- never invent a code or system yourself:\n  - Condition, or a FamilyMemberHistory's condition: call Search ICD-10 Condition Codes first, then use the returned system + code + display exactly.\n  - Allergy: call Search Allergen Codes (UNII) first, then use the returned system + code + display exactly. If the user also describes a reaction, call Search Allergy Reaction Codes and use its result too -- never invent a reaction code.\n  - Medication (Create Medication Statement): call Search Medication Codes (RxTerms) first, then use the returned system + code + display exactly.\n  - FamilyMemberHistory relationship: call Search Family Relationship Codes first, then use the returned system + code + display exactly.\n  - If a search returns several plausible matches, pick the closest match to what the user described; if it's genuinely ambiguous, list the top candidates and ask the user to pick one before creating the record.\n- Count: use Count Patients.\n- Never retry the same failed tool repeatedly — if a tool fails, explain the error to the user instead.\n- Keep responses concise and confirm successful operations only after they are verified as described above.\n- Use the conversation history (memory) to resolve follow-up messages such as confirmations (\"yes\", \"confirm\", \"go ahead\") or missing details the user provides afterward.\n\n\nPatient ID caching (do this to avoid repeat lookups and save time):\n- The first time you resolve a patient's ID via Search Patient in this conversation, end your reply with one extra short line in exactly this format:\n  [ref: <given> <family> = <patientId>]\n- Before calling Search Patient for a name, first scan earlier turns in this conversation for a matching [ref: ...] line for that exact given+family name. If found, use that patientId directly for Condition/Allergy/Vitals tools instead of calling Search Patient again.\n- If the name doesn't match any earlier [ref: ...] line, or the user is asking about a different patient, call Search Patient as normal and add a new [ref: ...] line for it.\n- Never reuse a cached ID if a later message in the conversation shows that patient was updated to a different name — re-search in that case.\n\n\nOrdering labs/imaging:\n- Always resolve the patient, a requester, and an assignee before creating an order. The assignee MUST be resolved via Search Practitioner By Role (role=lab_technician for a lab order, role=imaging_technician for an imaging order) -- never via Search Practitioner (plain name search) or the current logged-in practitioner, since the assignee specifically has to hold that role. If the user names a specific person, match that name against Search Practitioner By Role's results, not a separate name search. If the user says they are the requester themselves, use the practitioner reference given to you at the start of the conversation (\"Current logged-in practitioner reference: Practitioner/<id>\") instead of searching -- this applies to the requester only, never the assignee.\n- For pinned/AI tests (Colon & Lung Panel, Breast Biopsy, Breast Imaging), use the Resolve Pinned Questionnaire tools directly -- never search the catalog for these.\n- For anything else (a test/study named in plain language, e.g. 'a CT scan', 'a CBC'), you MUST call the matching Search Catalog tool (Search Lab Test Catalog / Search Imaging Study Catalog) FIRST -- this step can never be skipped, and you must NEVER construct or guess a LOINC code, or any other code, yourself under any circumstance, even one that looks plausible. Then show the user the actual candidate results returned (title translated to Arabic per the language rule below, up to ~5), and WAIT for them to pick one -- by number, name, or clear confirmation -- before calling Create Lab/Imaging Order. This applies even if the search returns only a single result, and even if the user's request sounded specific -- e.g. 'a CT scan' alone doesn't say chest vs. abdomen vs. head, so the real candidates must always be shown and picked from, exactly like the app's own Order Labs/Imaging screens (search, then pick from a list, then submit). Only call Create Lab/Imaging Order after that explicit selection.\n- Order creation is one tool call, Create Lab/Imaging Order (it creates the ServiceRequest and fulfillment Task together atomically). Orders cannot be deleted once created -- never report an order as created unless you actually called Create Lab/Imaging Order and it returned successfully; never describe a step as done that you didn't actually perform.\n\n\nLanguage for test/questionnaire content:\n- Titles and labels returned by Search Lab Test Catalog / Search Imaging Study Catalog, and the imaging report form fields (\"Study images\", \"Reason for study\", \"Relevant history\", \"Comparison study\", \"Findings\", \"Impressions\", \"Recommendation\"), come from English-language external sources (NLM, LOINC). Always translate them into natural Arabic when mentioning them in your reply, even if the user wrote in English. Do NOT translate LOINC codes, patient/practitioner names, or the [ref: ...]/[practitioner-ref: ...] tags. When passing a title through to Persist Catalog Lab Questionnaire or Create Lab/Imaging Order, always use the ORIGINAL ENGLISH title, not your translation.\n- Internal test titles (استمارة الرئة والقولون / استمارة خصائص الخزعة / استمارة تصوير الثدي) are already Arabic -- use them as given, don't re-translate or paraphrase.\n\n\nBooking a visit:\n- Resolve both the patient and the practitioner (via Search Patient/Search Practitioner, cached [ref:...]/[practitioner-ref:...] tags, or the current logged-in practitioner reference given to you at the start of the conversation -- e.g. if the user says 'assign it to me' / 'I'll see them', that IS the practitioner for this visit) before booking.\n- Every visit booked through this tool always uses the diagnosis PlanDefinition (http://medplum.com/graduationproject/GeneralDiagnosisPlan) -- this happens automatically, exactly like the app's own visit-booking screen, which has no picker for it. NEVER ask the user whether this is a diagnosis or treatment visit, and never use the oncology treatment plan here -- that's a separate feature (starting treatment after a referral) not available through chat.\n- Order of tool calls: Search Practitioner Appointments (conflict check) -> Get Patient (to check for an existing general practitioner / assigned specialist) -> Book Visit -> Search Active Care Plan -> (Apply Plan Definition only if Search Active Care Plan found nothing) -> Set Patient General Practitioner (ONLY if Get Patient showed no existing generalPractitioner and no assigned-specialist extension). A PlanDefinition is only applied once per patient per plan -- if an active CarePlan already exists, the new visit is simply attached to it and Apply Plan Definition must NOT be called again.\n- Confirm date/time and practitioner name with the user before creating the Appointment -- this books a real calendar slot. This is a real, but not exhaustive, booking -- opening the visit in the app afterward finishes any remaining setup.\n\n\nScheduling conflicts:\n- Before booking a visit, call Search Practitioner Appointments for the target practitioner and proposed start/end. If any returned appointment overlaps the requested slot, tell the user exactly what it conflicts with (time, and the patient name if resolvable) and ask whether to book anyway before calling Book Visit. Never book silently over a conflict without asking first -- a double-booking may be intentional (e.g. a quick check-in nested inside a longer visit) so this is a warning, not a hard rule, but the user must always be asked."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        656,
+        160
+      ],
+      "id": "718ef812-1d66-438b-b584-5fe2b78f1189",
+      "name": "AI Agent",
+      "retryOnFail": false,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Normalize Input').item.json.chatId }}",
+        "contextWindowLength": 10
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        464,
+        400
+      ],
+      "id": "ca012498-6b11-4f67-ae5d-bb673dd83f98",
+      "name": "Chat Memory"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search for a patient in Medplum by name (matches anywhere within their given/family name, not just the start -- but still requires an exact substring, no typo tolerance; see the search-retry rule in the system prompt for what to do on zero results).\nUse this tool when the user asks to find, search, display, or retrieve a patient, or when you need to check whether a name matches one or more patients before an update/delete.",
+        "url": "=http://medplum-server:8103/fhir/R4/Patient?name:contains={{ encodeURIComponent($fromAI('name')) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        880,
+        416
+      ],
+      "id": "32975fc6-1250-406b-8d18-13aa2fec5b8a",
+      "name": "Search Patient"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Update an existing patient in Medplum. Requires patientId -- resolve it the same way as every other write tool (Search Patient, or a cached [ref: ...] tag), never search by name inside this tool.\n\nRequires:\n- patientId\n- given (new first name to set)\n- family (new last name to set)\n\nOptional:\n- gender\n- birthDate",
+        "method": "PATCH",
+        "url": "=http://medplum-server:8103/fhir/R4/Patient/{{ $fromAI('patientId', 'Medplum Patient resource ID -- resolve via Search Patient or a cached [ref: ...] tag first') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json-patch+json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const ops = [\n    { op: 'replace', path: '/name', value: [{ family: $fromAI('family', 'New last name'), given: [$fromAI('given', 'New first name')] }] }\n  ];\n  const gender = $fromAI('gender', 'Patient gender (optional)', 'string');\n  if (gender) { ops.push({ op: 'add', path: '/gender', value: gender }); }\n  const birthDate = $fromAI('birthDate', 'Patient birth date YYYY-MM-DD (optional)', 'string');\n  if (birthDate) { ops.push({ op: 'add', path: '/birthDate', value: birthDate }); }\n  return ops;\n})() }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1024,
+        416
+      ],
+      "id": "871cfcfc-4251-4244-8153-f8dc00954160",
+      "name": "Update Patient"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Return the total number of Patient resources stored in Medplum.\n\nUse this tool when the user asks how many patients exist.",
+        "url": "http://medplum-server:8103/fhir/R4/Patient?_summary=count",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1184,
+        416
+      ],
+      "id": "a9665111-9aa9-4af7-bca9-099e262aebe7",
+      "name": "Count Patients"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Create a new Patient resource in Medplum.\n\nUse ONLY when the user wants to add or register a new patient.\n\nRequired:\n- given (first name)\n- family (last name)\n\nOptional:\n- gender\n- birthDate",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4/Patient",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/fhir+json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  resourceType: 'Patient',\n  managingOrganization: { reference: 'Organization?identifier=http://medplum.com/graduationproject/department|diagnostics' },\n  name: [\n    {\n      family: $fromAI('family', 'Patient last name'),\n      given: [\n        $fromAI('given', 'Patient first name')\n      ]\n    }\n  ],\n  gender: $fromAI('gender', 'Patient gender (optional)', 'string'),\n  birthDate: $fromAI('birthDate', 'Patient birth date YYYY-MM-DD (optional)', 'string')\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        736,
+        416
+      ],
+      "id": "ed36587b-2423-4951-b8f5-eddb78fe4890",
+      "name": "Create Patient1"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-flash-lite-latest",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        320,
+        400
+      ],
+      "id": "66d7f910-8118-465f-ad16-7f1236f5e322",
+      "name": "Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search a patient's Conditions (diagnoses / problem list) in Medplum.\nRequires patientId (the Medplum Patient resource ID). If you don't have it yet, call Search Patient first to look the patient up by name and get their id.\n\nRequires:\n- patientId",
+        "url": "=http://medplum-server:8103/fhir/R4/Condition?subject=Patient/{{ $fromAI('patientId', 'Medplum Patient resource ID') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        672,
+        576
+      ],
+      "id": "a955ffe4-c1b9-444a-9327-f1d26059f137",
+      "name": "Search Condition"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Add a new Condition (diagnosis / problem list item) for a patient in Medplum. Requires patientId (get it via Search Patient first if you only have a name) and a resolved ICD-10-CM code from Search ICD-10 Condition Codes -- call that tool first, never invent a code.\n\nRequires:\n- patientId\n- code (ICD-10-CM code, from Search ICD-10 Condition Codes)\n- system (code system URL, from Search ICD-10 Condition Codes -- normally http://hl7.org/fhir/sid/icd-10-cm)\n- display (diagnosis display text, from Search ICD-10 Condition Codes)\n\nOptional:\n- onsetDate (YYYY-MM-DD)\n- clinicalStatus (active/resolved/remission, defaults to active)",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4/Condition",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  resourceType: 'Condition',\n  meta: { profile: ['http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns'] },\n  category: [{ coding: [{ system: 'http://terminology.hl7.org/CodeSystem/condition-category', code: 'problem-list-item', display: 'Problem List Item' }], text: 'Problem List Item' }],\n  clinicalStatus: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/condition-clinical', code: $fromAI('clinicalStatus', 'active, resolved, or remission', 'string') || 'active' }] },\n  code: {\n    coding: [{\n      system: $fromAI('system', 'Code system URL from Search ICD-10 Condition Codes'),\n      code: $fromAI('code', 'ICD-10-CM code from Search ICD-10 Condition Codes'),\n      display: $fromAI('display', 'Diagnosis display text from Search ICD-10 Condition Codes')\n    }]\n  },\n  subject: { reference: 'Patient/' + $fromAI('patientId', 'Medplum Patient resource ID') },\n  onsetDateTime: $fromAI('onsetDate', 'Onset date YYYY-MM-DD (optional)', 'string') || undefined\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        816,
+        576
+      ],
+      "id": "be034e33-a3b4-4f80-af9e-0e9913dce722",
+      "name": "Create Condition"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search a patient's allergies (AllergyIntolerance) in Medplum.\nRequires patientId (get it via Search Patient first if you only have a name).\n\nRequires:\n- patientId",
+        "url": "=http://medplum-server:8103/fhir/R4/AllergyIntolerance?patient=Patient/{{ $fromAI('patientId', 'Medplum Patient resource ID') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        976,
+        576
+      ],
+      "id": "83606052-44c3-415f-ab98-77c687e40925",
+      "name": "Search Allergy"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Add a new allergy (AllergyIntolerance) for a patient in Medplum. Requires patientId and a resolved UNII allergen code from Search Allergen Codes (UNII) -- call that tool first, never invent a code.\n\nRequires:\n- patientId\n- code (UNII code, from Search Allergen Codes)\n- system (code system URL, from Search Allergen Codes -- normally http://fdasis.nlm.nih.gov/srs)\n- display (allergen display text, from Search Allergen Codes)\n\nOptional (if the user describes a reaction, call Search Allergy Reaction Codes first and pass its result -- never invent a reaction code):\n- reactionCode, reactionSystem, reactionDisplay (from Search Allergy Reaction Codes)\n- severity (mild/moderate/severe)",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4/AllergyIntolerance",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  resourceType: 'AllergyIntolerance',\n  meta: { profile: ['http://hl7.org/fhir/us/core/StructureDefinition/us-core-allergyintolerance'] },\n  clinicalStatus: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical', code: 'active' }] },\n  code: {\n    coding: [{\n      system: $fromAI('system', 'Code system URL from Search Allergen Codes (UNII)'),\n      code: $fromAI('code', 'UNII code from Search Allergen Codes (UNII)'),\n      display: $fromAI('display', 'Allergen display text from Search Allergen Codes (UNII)')\n    }]\n  },\n  patient: { reference: 'Patient/' + $fromAI('patientId', 'Medplum Patient resource ID') },\n  reaction: $fromAI('reactionCode', 'Reaction code from Search Allergy Reaction Codes (optional)', 'string') ? [{\n    manifestation: [{\n      coding: [{\n        system: $fromAI('reactionSystem', 'Reaction code system URL from Search Allergy Reaction Codes'),\n        code: $fromAI('reactionCode', 'Reaction code from Search Allergy Reaction Codes (optional)', 'string'),\n        display: $fromAI('reactionDisplay', 'Reaction display text from Search Allergy Reaction Codes')\n      }]\n    }],\n    severity: $fromAI('severity', 'mild, moderate, or severe (optional)', 'string') || undefined\n  }] : undefined\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1120,
+        576
+      ],
+      "id": "84f76371-cc31-4b2e-bf42-d6fc83cba873",
+      "name": "Create Allergy"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search a patient's recorded vital signs (Observation, category vital-signs) in Medplum.\nRequires patientId (get it via Search Patient first if you only have a name).\n\nRequires:\n- patientId",
+        "url": "=http://medplum-server:8103/fhir/R4/Observation?subject=Patient/{{ $fromAI('patientId', 'Medplum Patient resource ID') }}&category=vital-signs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        672,
+        736
+      ],
+      "id": "7c178bed-9e98-4124-a905-52e348ceba5b",
+      "name": "Search Vitals"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Record a new vital sign measurement (Observation) for a patient in Medplum. Uses the same 4 vital types as the app's vitals list, so entries made here show up there and vice versa.\nRequires patientId (get it via Search Patient first if you only have a name).\n\nRequires:\n- patientId\n- vitalType: one of meanbp (mean blood pressure), hrt (heart rate), resp (respiratory rate), temp (body temperature)\n- value: the numeric measurement (mean BP in mmHg, heart rate in /min, resp rate in /min, temp in Celsius)",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4/Observation",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const specs = {\n    meanbp: { code: '8478-0', display: 'Mean blood pressure', unit: 'mm[Hg]' },\n    hrt: { code: '8867-4', display: 'Heart rate', unit: '/min' },\n    resp: { code: '9279-1', display: 'Respiratory rate', unit: '/min' },\n    temp: { code: '8310-5', display: 'Body temperature', unit: 'Cel' }\n  };\n  const key = $fromAI('vitalType', 'one of: meanbp, hrt, resp, temp');\n  const spec = specs[key] || specs.hrt;\n  return {\n    resourceType: 'Observation',\n    status: 'final',\n    category: [{ coding: [{ system: 'http://terminology.hl7.org/CodeSystem/observation-category', code: 'vital-signs', display: 'Vital Signs' }] }],\n    code: { coding: [{ system: 'http://loinc.org', code: spec.code, display: spec.display }], text: spec.display },\n    subject: { reference: 'Patient/' + $fromAI('patientId', 'Medplum Patient resource ID') },\n    effectiveDateTime: new Date().toISOString(),\n    valueQuantity: { value: Number($fromAI('value', 'Measured numeric value')), unit: spec.unit, system: 'http://unitsofmeasure.org', code: spec.unit }\n  };\n})() }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        816,
+        736
+      ],
+      "id": "226caf7d-aade-40f4-95c5-90651e0b643a",
+      "name": "Create Vital Observation"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"reply\": $json.output } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1200,
+        144
+      ],
+      "id": "8ee7e475-9601-4008-b3e3-dc4f2c20a341",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search the ICD-10-CM code list for a diagnosis/condition by free-text term (e.g. 'type 2 diabetes', 'hypertension'). Returns up to 5 candidate codes, each with system, code, and display text.\n\nALWAYS call this before Create Condition or Create Family Member History and use one of the returned codes exactly (system + code + display) -- never invent an ICD-10 code yourself. If several results could match what the user described, pick the closest match; if it's genuinely ambiguous, ask the user to clarify.\n\nRequires:\n- term (free-text search term for the diagnosis/condition)",
+        "url": "=http://medplum-server:8103/fhir/R4/ValueSet/$expand?url={{ encodeURIComponent('http://medplum.com/graduationproject/ValueSet/icd10cm-all') }}&filter={{ encodeURIComponent($fromAI('term', 'Free-text search term')) }}&count=5",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        976,
+        752
+      ],
+      "id": "18254992-a7d1-4e82-a4a3-9e6496262d5a",
+      "name": "Search ICD-10 Condition Codes"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search the UNII substance code list for an allergen by free-text term (e.g. 'penicillin', 'peanuts'). Returns up to 5 candidate codes, each with system, code, and display text.\n\nALWAYS call this before Create Allergy and use one of the returned codes exactly (system + code + display) -- never invent a UNII code yourself. If several results could match what the user described, pick the closest match; if it's genuinely ambiguous, ask the user to clarify.\n\nRequires:\n- term (free-text search term for the allergen/substance)",
+        "url": "=http://medplum-server:8103/fhir/R4/ValueSet/$expand?url={{ encodeURIComponent('http://medplum.com/graduationproject/ValueSet/unii-all') }}&filter={{ encodeURIComponent($fromAI('term', 'Free-text search term')) }}&count=5",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1136,
+        752
+      ],
+      "id": "19b7504c-4394-4298-bbf5-0d435096dc24",
+      "name": "Search Allergen Codes (UNII)"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search the project's RxTerms (RxNorm-derived) medication code list by free-text term (e.g. 'metformin', 'lisinopril'). Returns up to 5 candidate codes, each with system, code, and display text.\n\nALWAYS call this before Create Medication Statement and use one of the returned codes exactly (system + code + display) -- never invent a medication code yourself. If several results could match what the user described (e.g. different dose forms), pick the closest match; if it's genuinely ambiguous, ask the user to clarify.\n\nRequires:\n- term (free-text search term for the medication)",
+        "url": "=http://medplum-server:8103/fhir/R4/ValueSet/$expand?url={{ encodeURIComponent('http://medplum.com/graduationproject/ValueSet/rxterms-all') }}&filter={{ encodeURIComponent($fromAI('term', 'Free-text search term')) }}&count=5",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1264,
+        752
+      ],
+      "id": "0d5e75f4-77ee-4df5-bbed-88e378f8317e",
+      "name": "Search Medication Codes (RxTerms)"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search the HL7 family-member relationship code list by free-text term (e.g. 'mother', 'brother', 'grandfather'). Returns up to 5 candidate codes, each with system, code, and display text.\n\nALWAYS call this before Create Family Member History (for the relationship field) and use one of the returned codes exactly (system + code + display) -- never invent a relationship code yourself.\n\nRequires:\n- term (free-text search term for the family relationship)",
+        "url": "=http://medplum-server:8103/fhir/R4/ValueSet/$expand?url={{ encodeURIComponent('http://terminology.hl7.org/ValueSet/v3-FamilyMember') }}&filter={{ encodeURIComponent($fromAI('term', 'Free-text search term')) }}&count=5",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1264,
+        576
+      ],
+      "id": "131a1c2f-19c3-48cc-b939-7fcc3663588b",
+      "name": "Search Family Relationship Codes"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Record a medication the patient is currently taking (MedicationStatement) in Medplum. Requires patientId (get it via Search Patient first if you only have a name) and a resolved RxTerms code from Search Medication Codes (RxTerms) -- call that tool first, never invent a code.\n\nRequires:\n- patientId\n- code (RxTerms code, from Search Medication Codes)\n- system (code system URL, from Search Medication Codes -- normally http://medplum.com/graduationproject/CodeSystem/rxterms)\n- display (medication display text, from Search Medication Codes)\n\nOptional:\n- status (active/stopped/on-hold/completed/entered-in-error/unknown/intended, defaults to active)",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4/MedicationStatement",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  resourceType: 'MedicationStatement',\n  meta: { profile: ['http://hl7.org/fhir/us/core/StructureDefinition/us-core-medicationrequest'] },\n  status: $fromAI('status', 'active, stopped, on-hold, completed, entered-in-error, unknown, or intended (optional)', 'string') || 'active',\n  medicationCodeableConcept: {\n    coding: [{\n      system: $fromAI('system', 'Code system URL from Search Medication Codes (RxTerms)'),\n      code: $fromAI('code', 'RxTerms code from Search Medication Codes (RxTerms)'),\n      display: $fromAI('display', 'Medication display text from Search Medication Codes (RxTerms)')\n    }]\n  },\n  subject: { reference: 'Patient/' + $fromAI('patientId', 'Medplum Patient resource ID') }\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1328,
+        416
+      ],
+      "id": "8c80a436-d760-4251-938e-e556fce3a7b3",
+      "name": "Create Medication Statement"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Record a family member's medical history (FamilyMemberHistory) for a patient in Medplum. Requires patientId and BOTH a resolved relationship code (from Search Family Relationship Codes) and a resolved ICD-10 condition code (from Search ICD-10 Condition Codes) -- call those tools first, never invent codes.\n\nRequires:\n- patientId\n- relationshipSystem, relationshipCode, relationshipDisplay (from Search Family Relationship Codes)\n- conditionSystem, conditionCode, conditionDisplay (from Search ICD-10 Condition Codes)\n\nOptional:\n- deceased (true/false)",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4/FamilyMemberHistory",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  resourceType: 'FamilyMemberHistory',\n  status: 'completed',\n  patient: { reference: 'Patient/' + $fromAI('patientId', 'Medplum Patient resource ID') },\n  relationship: {\n    coding: [{\n      system: $fromAI('relationshipSystem', 'Relationship code system URL from Search Family Relationship Codes'),\n      code: $fromAI('relationshipCode', 'Relationship code from Search Family Relationship Codes'),\n      display: $fromAI('relationshipDisplay', 'Relationship display text from Search Family Relationship Codes')\n    }]\n  },\n  condition: [{\n    code: {\n      coding: [{\n        system: $fromAI('conditionSystem', 'ICD-10 code system URL from Search ICD-10 Condition Codes'),\n        code: $fromAI('conditionCode', 'ICD-10 code from Search ICD-10 Condition Codes'),\n        display: $fromAI('conditionDisplay', 'Condition display text from Search ICD-10 Condition Codes')\n      }]\n    }\n  }],\n  deceasedBoolean: $fromAI('deceased', 'Whether this family member is deceased (optional)', 'boolean') || undefined\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1408,
+        752
+      ],
+      "id": "db89ec5c-e5ad-46e0-9718-99950326aada",
+      "name": "Create Family Member History"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search the standard allergic-reaction manifestation code list by free-text term (e.g. 'hives', 'anaphylaxis', 'rash', 'swelling', 'nausea', 'wheezing'). Returns up to 5 candidate codes, each with system, code, and display text.\n\nCall this before Create Allergy whenever the user describes a reaction, and use one of the returned codes exactly (system + code + display) -- never invent a reaction code yourself. If several results could match what the user described, pick the closest match; if it's genuinely ambiguous, ask the user to clarify. If nothing in the list matches the described reaction, tell the user this reaction type isn't in the standard list and create the allergy without a reaction, or ask them to pick the closest standard option.\n\nRequires:\n- term (free-text search term for the reaction)",
+        "url": "=http://medplum-server:8103/fhir/R4/ValueSet/$expand?url={{ encodeURIComponent('http://medplum.com/graduationproject/ValueSet/allergy-reaction-all') }}&filter={{ encodeURIComponent($fromAI('term', 'Free-text search term for the reaction')) }}&count=5",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        672,
+        896
+      ],
+      "id": "bc83fb2f-7e83-4f48-819d-bbdf72b3a62d",
+      "name": "Search Allergy Reaction Codes"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"parts\": [\n        { \"text\":{{ JSON.stringify($json.body.text) }} }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\"AUDIO\"],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": { \"voiceName\": \"Kore\" }\n      }\n    }\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -432,
+        432
+      ],
+      "id": "a8b64ba8-6f13-42ab-a1ea-1e41a5bd494b",
+      "name": "Generate Speech (TTS Only)",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const base64 = $json.candidates[0].content.parts[0].inlineData.data;\nconst mimeType = $json.candidates[0].content.parts[0].inlineData.mimeType || 'audio/L16;rate=24000';\nconst rateMatch = mimeType.match(/rate=(\\d+)/);\nconst sampleRate = rateMatch ? parseInt(rateMatch[1]) : 24000;\nconst numChannels = 1;\nconst bitsPerSample = 16;\n\nconst pcmData = Buffer.from(base64, 'base64');\n\nfunction createWavHeader(dataLength, sampleRate, numChannels, bitsPerSample) {\n  const byteRate = sampleRate * numChannels * bitsPerSample / 8;\n  const blockAlign = numChannels * bitsPerSample / 8;\n  const buffer = Buffer.alloc(44);\n  buffer.write('RIFF', 0);\n  buffer.writeUInt32LE(36 + dataLength, 4);\n  buffer.write('WAVE', 8);\n  buffer.write('fmt ', 12);\n  buffer.writeUInt32LE(16, 16);\n  buffer.writeUInt16LE(1, 20);\n  buffer.writeUInt16LE(numChannels, 22);\n  buffer.writeUInt32LE(sampleRate, 24);\n  buffer.writeUInt32LE(byteRate, 28);\n  buffer.writeUInt16LE(blockAlign, 32);\n  buffer.writeUInt16LE(bitsPerSample, 34);\n  buffer.write('data', 36);\n  buffer.writeUInt32LE(dataLength, 40);\n  return buffer;\n}\n\nconst header = createWavHeader(pcmData.length, sampleRate, numChannels, bitsPerSample);\nconst wavBuffer = Buffer.concat([header, pcmData]);\n\nreturn {\n  json: {\n    audioBase64: wavBuffer.toString('base64'),\n    audioMimeType: 'audio/wav'\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        432
+      ],
+      "id": "d454a892-564e-4615-8e2c-7ed0ee1e1191",
+      "name": "Convert PCM to WAV (TTS Only)"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"audio\": $json.audioBase64, \"audioMimeType\": $json.audioMimeType } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        16,
+        432
+      ],
+      "id": "6f621a7d-58aa-4f53-9fea-a99b1694d171",
+      "name": "Respond to Webhook (TTS Only)"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search for a practitioner by name when the user has actually named someone -- e.g. a visit's target practitioner, a referral's target doctor, or an order's requester if they're not the current logged-in user.\n\nDo NOT use this to resolve a lab/imaging order's assignee -- an assignee must hold the matching lab_technician/imaging_technician role, which a plain name search cannot verify. Use Search Practitioner By Role for that instead.\n\nRequires:\n- name (free-text search term, e.g. 'Ahmed' or 'Sara Cohen')",
+        "url": "=http://medplum-server:8103/fhir/R4/Practitioner?name:contains={{ encodeURIComponent($fromAI('name', 'Practitioner name to search for')) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        816,
+        896
+      ],
+      "id": "195533b5-49c0-43d9-a2b7-f4f0abf8d94c",
+      "name": "Search Practitioner"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Resolve the Questionnaire ID for one of the two pinned/AI lab tests, before creating a fulfillment Task for a lab order.\n\ntestCode must be exactly one of:\n- 'colon-and-lung' (title: Colon & Lung Panel / استمارة الرئة والقولون)\n- 'breast-biopsy' (title: Breast Biopsy / استمارة خصائص الخزعة)\n\nNever use this for any other test -- use Search Lab Test Catalog instead. Returns a FHIR Bundle; read the Questionnaire id from entry[0].resource.id (fails/empty if the Bundle has no entries -- tell the user this test isn't set up yet rather than inventing an id).",
+        "url": "=http://medplum-server:8103/fhir/R4/Questionnaire?url={{ encodeURIComponent($fromAI('testCode', \"'colon-and-lung' or 'breast-biopsy'\") === 'breast-biopsy' ? 'http://medplum.com/graduationproject/BiopsyQuestionnaire' : 'http://medplum.com/graduationproject/ColonAndLungQuestionnaire') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1120,
+        896
+      ],
+      "id": "9c71ead4-c4f8-414a-8c0c-a2f3d26c04d6",
+      "name": "Resolve Pinned Lab Questionnaire"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Resolve the Questionnaire ID for the pinned Breast Imaging AI test (استمارة تصوير الثدي) before creating its fulfillment Task. Only use for a breast imaging order -- use Resolve Imaging Report Questionnaire for anything else. Returns a FHIR Bundle; read the Questionnaire id from entry[0].resource.id.",
+        "url": "=http://medplum-server:8103/fhir/R4/Questionnaire?url={{ encodeURIComponent('http://medplum.com/graduationproject/BreastImagingQuestionnaire') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1264,
+        896
+      ],
+      "id": "5c492244-580e-49f3-804d-93d36bed447a",
+      "name": "Resolve Pinned Imaging Questionnaire"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Resolve the single static Imaging Study Report Questionnaire used to record results for every non-pinned (catalog) imaging order -- every catalog imaging order uses this same Questionnaire regardless of which study was ordered. Call this (not Persist Catalog Lab Questionnaire) after Search Imaging Study Catalog, before creating the fulfillment Task. Returns a FHIR Bundle; read the Questionnaire id from entry[0].resource.id.",
+        "url": "=http://medplum-server:8103/fhir/R4/Questionnaire?url={{ encodeURIComponent('http://medplum.com/graduationproject/Questionnaire/imaging-report') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1408,
+        896
+      ],
+      "id": "ca095aa6-b205-4763-b509-0f6a0590500c",
+      "name": "Resolve Imaging Report Questionnaire"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search NLM's live LOINC lab-panel catalog by free-text term (e.g. 'CBC', 'lipid panel', 'thyroid'). Use this for any lab test that is NOT one of the two pinned/AI tests (see Resolve Pinned Lab Questionnaire). Returns a FHIR Bundle of Questionnaires -- for each candidate, read entry[].resource.title (English) and entry[].resource.code[0].code (a LOINC code). Always translate the title to Arabic when presenting choices to the user (see the language rule in the system prompt) -- but pass the ORIGINAL ENGLISH title through to Persist Catalog Lab Questionnaire afterwards. Never invent a LOINC code -- only use ones returned here.",
+        "url": "=https://lforms-fhir.nlm.nih.gov/baseR4/Questionnaire?title:contains={{ encodeURIComponent($fromAI('term', 'Free-text lab panel search term, e.g. CBC, lipid panel')) }}&_count=15",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        656,
+        1056
+      ],
+      "id": "5e20b954-f0c4-4508-afbb-f89e63c593b4",
+      "name": "Search Lab Test Catalog"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Save (or reuse, if already saved) a Questionnaire for a catalog lab test chosen from Search Lab Test Catalog, so a fulfillment Task can reference it. Idempotent -- calling this again with the same LOINC code returns the existing Questionnaire rather than creating a duplicate, so it's safe to call every time a catalog lab test is ordered.\n\nNote: this creates a minimal results-recording form (title + LOINC code + one general findings field), not a full copy of NLM's panel-specific item list.\n\nRequires:\n- loinc (LOINC code from Search Lab Test Catalog)\n- title (the ORIGINAL ENGLISH title from Search Lab Test Catalog -- do not pass a translated title here, only translate when speaking to the user)\n\nRead the created/existing Questionnaire's id from the response body -- use it as questionnaireId for Create Fulfillment Task.",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4/Questionnaire",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "If-None-Exist",
+              "value": "={{ 'url=' + encodeURIComponent('http://medplum.com/graduationproject/Questionnaire/' + $fromAI('loinc', 'LOINC code from Search Lab Test Catalog')) }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const loinc = $fromAI('loinc', 'LOINC code from Search Lab Test Catalog');\n  const title = $fromAI('title', 'Original English lab panel title from Search Lab Test Catalog');\n  return {\n    resourceType: 'Questionnaire',\n    status: 'active',\n    url: 'http://medplum.com/graduationproject/Questionnaire/' + loinc,\n    title: title,\n    code: [{ system: 'http://loinc.org', code: loinc, display: title }],\n    item: [{ linkId: 'results', text: 'Results / findings', type: 'text' }]\n  };\n})() }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        816,
+        1056
+      ],
+      "id": "dda36799-df6a-4c5d-a17e-113774820cbe",
+      "name": "Persist Catalog Lab Questionnaire"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search a LOINC radiology value set by free-text term (e.g. 'chest x-ray', 'MRI brain'). Use this for any imaging study that is NOT the pinned Breast Imaging AI test (see Resolve Pinned Imaging Questionnaire). Returns expansion.contains[], each with system/code/display -- the display is the study title (English). Always translate it to Arabic when presenting choices to the user. If expansion.contains is empty or missing, call Search Imaging Study Catalog (Fallback) instead of giving up. Never invent a LOINC code.",
+        "url": "=https://tx.fhir.org/r4/ValueSet/$expand?url={{ encodeURIComponent('http://hl7.org/fhir/uv/ips/ValueSet/results-radiology-observations-uv-ips') }}&filter={{ encodeURIComponent($fromAI('term', 'Free-text imaging study search term')) }}&count=20",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        976,
+        1056
+      ],
+      "id": "dc71b4bb-01c5-48ed-bbeb-819ea2140549",
+      "name": "Search Imaging Study Catalog"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Fallback imaging study search across all of LOINC (not just the radiology subset) -- call this ONLY if Search Imaging Study Catalog returned no matches (expansion.contains empty or missing). Same requires/behavior otherwise.",
+        "url": "=https://tx.fhir.org/r4/ValueSet/$expand?url={{ encodeURIComponent('http://loinc.org/vs') }}&filter={{ encodeURIComponent($fromAI('term', 'Free-text imaging study search term')) }}&count=20",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1120,
+        1056
+      ],
+      "id": "efbd8eac-5368-4cda-8e67-29c87a19ec5b",
+      "name": "Search Imaging Study Catalog (Fallback)"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Check whether a patient already has an active CarePlan for a given PlanDefinition, before booking a visit -- a PlanDefinition is only ever applied ONCE per patient per plan. ALWAYS call this before Apply Plan Definition. If this returns a CarePlan, skip Apply Plan Definition entirely and use this CarePlan's id as the visit's care plan.\n\nRequires:\n- patientId\n- planDefinitionUrl: http://medplum.com/graduationproject/GeneralDiagnosisPlan for a general/diagnosis visit, or http://medplum.com/graduationproject/OncologyTreatmentPlan for a treatment visit",
+        "url": "=http://medplum-server:8103/fhir/R4/CarePlan?patient=Patient/{{ $fromAI('patientId', 'Medplum Patient resource ID') }}&status=active&instantiates-canonical={{ encodeURIComponent($fromAI('planDefinitionUrl', 'The PlanDefinition canonical url being applied')) }}&_sort=-_lastUpdated&_count=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        560,
+        576
+      ],
+      "id": "05d4a082-38e3-4f34-8aab-bdbaed5f9947",
+      "name": "Search Active Care Plan"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Resolve a PlanDefinition's resource id from its canonical url, needed to call Apply Plan Definition. Requires:\n- planDefinitionUrl: http://medplum.com/graduationproject/GeneralDiagnosisPlan for a general/diagnosis visit, or http://medplum.com/graduationproject/OncologyTreatmentPlan for a treatment visit. Returns a FHIR Bundle; read the id from entry[0].resource.id.",
+        "url": "=http://medplum-server:8103/fhir/R4/PlanDefinition?url={{ encodeURIComponent($fromAI('planDefinitionUrl', 'The PlanDefinition canonical url')) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        528,
+        736
+      ],
+      "id": "32456c94-6413-444b-8625-404a5b7509bf",
+      "name": "Resolve Plan Definition"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Check a practitioner's existing (non-cancelled) Appointments overlapping a proposed time range, before booking a visit. ALWAYS call this before Create Appointment. If any returned appointment's start/end overlaps the requested start/end, tell the user exactly what it conflicts with (its start/end, and the other party if resolvable) and ask whether to book anyway before calling Create Appointment -- never book silently over a conflict.\n\nRequires:\n- practitionerId\n- start (ISO 8601)\n- end (ISO 8601)",
+        "url": "=http://medplum-server:8103/fhir/R4/Appointment?actor=Practitioner/{{ $fromAI('practitionerId', 'Medplum Practitioner resource ID') }}&date=ge{{ encodeURIComponent($fromAI('start', 'Proposed visit start, ISO 8601')) }}&date=le{{ encodeURIComponent($fromAI('end', 'Proposed visit end, ISO 8601')) }}&status:not=cancelled",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        528,
+        896
+      ],
+      "id": "a7e94e90-fc12-4e36-bb1b-7072896fc0f7",
+      "name": "Search Practitioner Appointments"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Apply a PlanDefinition to a newly-created Encounter, generating its CarePlan and Tasks -- step 3 of booking a visit. ONLY call this if Search Active Care Plan found NO existing active CarePlan for this patient+PlanDefinition -- a PlanDefinition is applied at most once per patient per plan; a patient with an existing active CarePlan just has their new visit attached to it instead (no call needed here).\n\nRequires:\n- planDefinitionId (from Resolve Plan Definition)\n- patientId\n- encounterId (from Create Encounter)\n- practitionerId\n\nNote: opening the visit in the app afterward finishes assigning any remaining generated tasks/charges to the practitioner.",
+        "method": "POST",
+        "url": "=http://medplum-server:8103/fhir/R4/PlanDefinition/{{ $fromAI('planDefinitionId', 'PlanDefinition resource ID from Resolve Plan Definition') }}/$apply",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  resourceType: 'Parameters',\n  parameter: [\n    { name: 'subject', valueString: 'Patient/' + $fromAI('patientId', 'Medplum Patient resource ID') },\n    { name: 'encounter', valueString: 'Encounter/' + $fromAI('encounterId', 'Encounter resource ID from Create Encounter') },\n    { name: 'practitioner', valueString: 'Practitioner/' + $fromAI('practitionerId', 'Medplum Practitioner resource ID') }\n  ]\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1392,
+        576
+      ],
+      "id": "6de54a26-d734-455b-8979-c112eacc2981",
+      "name": "Apply Plan Definition"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Place a lab or imaging order -- creates the ServiceRequest (the order) and its fulfillment Task (who does it) together, atomically, in one call. Requires the patient, requester, and test/study to already be resolved (Search Patient / cached [ref:...] for the patient; the current logged-in practitioner's own reference, given to you at the start of the conversation, or Search Practitioner, for the requester; a Resolve Pinned Questionnaire tool or a Search Catalog tool + Persist Catalog Lab Questionnaire for the test/questionnaire).\n\nRequires:\n- patientId, requesterId, assigneeId (assignee must be a lab_technician for a lab order, imaging_technician for an imaging order -- ask the user who should fulfill it if not given, resolve their id via Search Practitioner if you only have a name)\n- categoryCode: 'LAB' for a lab order, 'RAD' for an imaging order\n- codeSystem: http://medplum.com/graduationproject/ai-test-code for a pinned/AI test, or http://loinc.org for anything found via a Search Catalog tool\n- code: the pinned test code (colon-and-lung / breast-biopsy / breast-imaging) or the LOINC code from a Search Catalog tool -- never invent this\n- title: the test/study title (English -- see the language rule for what to say to the user)\n- questionnaireId: from whichever Resolve/Persist Questionnaire tool was used\n\nOptional:\n- notes (free text)\n- occurrenceDateTime (ISO 8601, specimen/study date-time)\n- encounterId (Encounter resource ID this order is tied to)\n\nReturns a FHIR Bundle -- read the created ServiceRequest id from entry[0].resource.id. Never invent patient/requester/codes -- resolve them via the appropriate tool first. Confirm the test, patient, and assignee with the user before calling this if any were inferred rather than stated explicitly -- orders cannot be deleted once created.",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const uuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {\n    const r = Math.random() * 16 | 0;\n    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);\n  });\n  const categoryCode = $fromAI('categoryCode', \"'LAB' for a lab order or 'RAD' for an imaging order\");\n  const notes = $fromAI('notes', 'Order notes (optional)', 'string');\n  const occurrenceDateTime = $fromAI('occurrenceDateTime', 'Specimen/study date-time ISO 8601 (optional)', 'string');\n  const encounterId = $fromAI('encounterId', 'Encounter resource ID this order is tied to (optional)', 'string');\n  const title = $fromAI('title', 'Test/study title');\n  const questionnaireId = $fromAI('questionnaireId', 'Questionnaire resource ID from a Resolve/Persist Questionnaire tool');\n  const serviceRequestUrn = 'urn:uuid:' + uuid();\n  const serviceRequest = {\n    resourceType: 'ServiceRequest',\n    status: 'active',\n    intent: 'order',\n    subject: { reference: 'Patient/' + $fromAI('patientId', 'Medplum Patient resource ID') },\n    requester: { reference: 'Practitioner/' + $fromAI('requesterId', 'Medplum Practitioner resource ID of the requester') },\n    category: [{ coding: [{ system: 'http://terminology.hl7.org/CodeSystem/v2-0074', code: categoryCode, display: categoryCode === 'RAD' ? 'Radiology' : 'Laboratory' }] }],\n    code: {\n      text: title,\n      coding: [{\n        system: $fromAI('codeSystem', 'Code system: ai-test-code for a pinned test, loinc.org for a catalog test'),\n        code: $fromAI('code', 'Pinned test code or LOINC code'),\n        display: title\n      }]\n    },\n    note: notes ? [{ text: notes }] : undefined,\n    occurrenceDateTime: occurrenceDateTime || undefined,\n    encounter: encounterId ? { reference: 'Encounter/' + encounterId } : undefined,\n    authoredOn: new Date().toISOString()\n  };\n  const task = {\n    resourceType: 'Task',\n    status: 'requested',\n    intent: 'order',\n    code: { text: 'Record results: ' + title },\n    focus: { reference: 'Questionnaire/' + questionnaireId },\n    basedOn: [{ reference: serviceRequestUrn }],\n    for: { reference: 'Patient/' + $fromAI('patientId', 'Medplum Patient resource ID') },\n    requester: { reference: 'Practitioner/' + $fromAI('requesterId', 'Medplum Practitioner resource ID of the requester') },\n    owner: { reference: 'Practitioner/' + $fromAI('assigneeId', 'Medplum Practitioner resource ID of the lab_technician/imaging_technician assignee') },\n    authoredOn: new Date().toISOString(),\n    input: [{ type: { text: 'Questionnaire' }, valueReference: { reference: 'Questionnaire/' + questionnaireId } }]\n  };\n  return {\n    resourceType: 'Bundle',\n    type: 'transaction',\n    entry: [\n      { fullUrl: serviceRequestUrn, resource: serviceRequest, request: { method: 'POST', url: 'ServiceRequest' } },\n      { fullUrl: 'urn:uuid:' + uuid(), resource: task, request: { method: 'POST', url: 'Task' } }\n    ]\n  };\n})() }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        592,
+        416
+      ],
+      "id": "fa7abca3-82d1-42b3-8151-2f8d2215ddf4",
+      "name": "Create Lab/Imaging Order"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Book a visit -- creates the Appointment (calendar booking) and the Encounter (clinical visit record) together, atomically, in one call. This is step 1 of visit booking, always followed by Search Active Care Plan (and Apply Plan Definition if that finds nothing). Always call Search Practitioner Appointments first and get the user's confirmation if there's a conflict.\n\nRequires:\n- patientId\n- practitionerId\n- start (ISO 8601)\n- end (ISO 8601)\n- classCode: one of AMB (ambulatory, the default for most visits), VR (virtual), IMP (inpatient), EMER (emergency) -- ask the user if unclear for a general/diagnosis visit; always AMB for a treatment visit\n\nOptional:\n- status (defaults to 'planned')\n\nReturns a FHIR Bundle -- read the created Encounter id from entry[1].resource.id, needed for Search Active Care Plan / Apply Plan Definition next.",
+        "method": "POST",
+        "url": "http://medplum-server:8103/fhir/R4",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const uuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {\n    const r = Math.random() * 16 | 0;\n    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);\n  });\n  const patientId = $fromAI('patientId', 'Medplum Patient resource ID');\n  const appointmentUrn = 'urn:uuid:' + uuid();\n  const practitionerId = $fromAI('practitionerId', 'Medplum Practitioner resource ID');\n  const classCode = $fromAI('classCode', 'AMB, VR, IMP, or EMER');\n  const classDisplay = { AMB: 'ambulatory', VR: 'virtual', IMP: 'inpatient encounter', EMER: 'emergency' }[classCode] || 'ambulatory';\n  const appointment = {\n    resourceType: 'Appointment',\n    status: 'booked',\n    start: $fromAI('start', 'Visit start, ISO 8601'),\n    end: $fromAI('end', 'Visit end, ISO 8601'),\n    participant: [\n      { actor: { reference: 'Patient/' + patientId }, status: 'accepted' },\n      { actor: { reference: 'Practitioner/' + practitionerId }, status: 'accepted' }\n    ]\n  };\n  const encounter = {\n    resourceType: 'Encounter',\n    status: $fromAI('status', \"Encounter status, defaults to 'planned' (optional)\", 'string') || 'planned',\n    statusHistory: [],\n    classHistory: [],\n    class: { system: 'http://terminology.hl7.org/CodeSystem/v3-ActCode', code: classCode, display: classDisplay },\n    subject: { reference: 'Patient/' + patientId },\n    appointment: [{ reference: appointmentUrn }],\n    participant: [{ individual: { reference: 'Practitioner/' + practitionerId } }]\n  };\n  return {\n    resourceType: 'Bundle',\n    type: 'transaction',\n    entry: [\n      { fullUrl: appointmentUrn, resource: appointment, request: { method: 'POST', url: 'Appointment' } },\n      { fullUrl: 'urn:uuid:' + uuid(), resource: encounter, request: { method: 'POST', url: 'Encounter' } }\n    ]\n  };\n})() }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        528,
+        1056
+      ],
+      "id": "9340a387-d350-4ec7-b19c-8d6986921fb1",
+      "name": "Book Visit"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Find practitioners who actually hold a given staff role -- this is the ONLY correct way to resolve a lab/imaging order's assignee, and is also useful for booking a visit with 'any available GP/oncologist' rather than a specific named doctor.\n\nRequires:\n- role: one of secretary, gp, lab_technician, imaging_technician, oncologist, admin. Use lab_technician for a lab order's assignee, imaging_technician for an imaging order's assignee.\n\nReturns a FHIR Bundle mixing PractitionerRole and Practitioner entries (via _include) -- read only the entries where resource.resourceType is 'Practitioner' for candidate id + name. If none are returned, tell the user no one with that role is set up yet -- do NOT fall back to Search Practitioner or any other practitioner as a substitute. If more than one match, list their names and ask the user which one before using an id.",
+        "url": "=http://medplum-server:8103/fhir/R4/PractitionerRole?role={{ encodeURIComponent('http://medplum.com/graduationproject/staff-role|' + $fromAI('role', 'secretary, gp, lab_technician, imaging_technician, oncologist, or admin')) }}&active=true&_include=PractitionerRole:practitioner&_count=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        976,
+        896
+      ],
+      "id": "e4f8b3b8-9951-42d3-8bff-1a9e8c32c8a6",
+      "name": "Search Practitioner By Role"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Read a Patient's full record by id. Use this before Book Visit to check whether they already have a general practitioner (Patient.generalPractitioner, an array of Practitioner references) or an assigned specialist (an extension in Patient.extension with url http://medplum.com/graduationproject/assigned-specialist). This determines whether the practitioner you're about to book them with should become their general practitioner automatically -- see Set Patient General Practitioner.",
+        "url": "=http://medplum-server:8103/fhir/R4/Patient/{{ $fromAI('patientId', 'Medplum Patient resource ID') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1264,
+        1056
+      ],
+      "id": "cd8fb04d-6855-41ef-b7d3-2af2d3adb4f6",
+      "name": "Get Patient"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Sets a practitioner as a patient's general practitioner. Call this right after Book Visit succeeds, ONLY if Get Patient showed the patient has no existing generalPractitioner and no assigned-specialist extension -- this is how the app records 'their' doctor the first time someone sees them. Never call this if the patient already has a general practitioner or an assigned specialist -- that would silently overwrite it.\n\nRequires:\n- patientId\n- practitionerId (the practitioner just booked in Book Visit)\n- practitionerName (their full display name, e.g. 'Dr. Ahmed Youssef' -- from Search Practitioner / Search Practitioner By Role's result, or however the user referred to them -- this is shown in the patient chart, so it must be a real name, never left blank or invented)",
+        "method": "PATCH",
+        "url": "=http://medplum-server:8103/fhir/R4/Patient/{{ $fromAI('patientId', 'Medplum Patient resource ID') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json-patch+json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Normalize Input').item.json.medplumToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ [\n  { op: 'add', path: '/generalPractitioner', value: [{\n    reference: 'Practitioner/' + $fromAI('practitionerId', 'Medplum Practitioner resource ID -- the one just booked'),\n    display: $fromAI('practitionerName', 'Practitioner full display name, e.g. Dr. Ahmed Youssef')\n  }] }\n] }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        1408,
+        1056
+      ],
+      "id": "b876e66b-19ab-4ad3-b085-6de4ef6ba904",
+      "name": "Set Patient General Practitioner"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Route Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Source": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Decode Webhook Audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Speech (TTS Only)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode Webhook Audio": {
+      "main": [
+        [
+          {
+            "node": "Transcribe Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe Voice": {
+      "main": [
+        [
+          {
+            "node": "Tag Voice Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Voice Source": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Patient": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Patient": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Patients": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Patient1": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Condition": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Condition": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Allergy": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Allergy": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Vitals": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Vital Observation": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search ICD-10 Condition Codes": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Allergen Codes (UNII)": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Medication Codes (RxTerms)": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Family Relationship Codes": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Medication Statement": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Family Member History": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Allergy Reaction Codes": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Speech (TTS Only)": {
+      "main": [
+        [
+          {
+            "node": "Convert PCM to WAV (TTS Only)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert PCM to WAV (TTS Only)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook (TTS Only)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Practitioner": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Pinned Lab Questionnaire": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Pinned Imaging Questionnaire": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Imaging Report Questionnaire": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Lab Test Catalog": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Catalog Lab Questionnaire": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Imaging Study Catalog": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Imaging Study Catalog (Fallback)": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Active Care Plan": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Plan Definition": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Practitioner Appointments": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Plan Definition": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Lab/Imaging Order": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Book Visit": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Practitioner By Role": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Patient": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Patient General Practitioner": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {},
+  "nodeGroups": [],
+  "tags": []
+}
